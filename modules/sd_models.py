@@ -398,10 +398,10 @@ def read_state_dict(checkpoint_file, print_global_state=False, map_location=None
         
         if not shared.opts.disable_mmap_load_safetensors:
             print("   🚀 使用内存映射加载 (mmap enabled)")
-            start = time.time()
+            # start = time.time()
             pl_sd = safetensors.torch.load_file(checkpoint_file, device=device)
-            load_time = time.time() - start
-            print(f"   ✅ 加载完成 | 张量数量: {len(pl_sd)} | 耗时: {load_time:.2f}s")
+            # load_time = time.time() - start
+            # print(f"   ✅ 加载完成 | 张量数量: {len(pl_sd)} | 耗时: {load_time:.2f}s")
         else:
             print("   ⚠️ 禁用内存映射 (mmap disabled)")
             print("   🐢 完整文件加载到内存...")
@@ -1174,8 +1174,8 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
     # 计算空提示条件
     print("\n[7/9] 🌀 计算空提示条件")
     with devices.autocast() as amp_ctx, torch.no_grad() as no_grad_ctx:
-        print(f"   进入混合精度上下文: {amp_ctx.enabled}")
-        print(f"   梯度计算状态: {not no_grad_ctx.enabled}")
+        # print(f"   进入混合精度上下文: {amp_ctx.enabled}")
+        # print(f"   梯度计算状态: {not no_grad_ctx.enabled}")
         
         empty_cond = get_empty_cond(sd_model)
         sd_model.cond_stage_model_empty_prompt = empty_cond
