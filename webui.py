@@ -7,6 +7,9 @@ from modules import timer
 from modules import initialize_util
 from modules import initialize
 
+os.environ.pop("MPLBACKEND", None) 
+
+
 startup_timer = timer.startup_timer
 startup_timer.record("launcher")
 
