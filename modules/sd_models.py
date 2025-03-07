@@ -260,23 +260,95 @@ def transform_checkpoint_dict_key(k, replacements):
 
 
 def get_state_dict_from_checkpoint(pl_sd):
-    pl_sd = pl_sd.pop("state_dict", pl_sd)
+# def ok32432():
+    print("\n🔧 开始状态字典处理流程")
+    
+    # 初始状态检查
+    print("[1/6] 📊 初始状态分析")
+    original_keys = set(pl_sd.keys())
+    print(f"   原始键数量: {len(pl_sd)}")
+    print(f"   前5个键示例: {list(pl_sd.keys())[:5]}")
+
+    # 处理state_dict键
+    print("\n[2/6] 🗑️ 清理state_dict条目")
+    state_dict_popped = pl_sd.pop("state_dict", pl_sd)
+    is_dangerous_pop = state_dict_popped is pl_sd
+    print(f"   首次pop操作结果: {'⚠️ 危险操作（返回整个字典）' if is_dangerous_pop else '✅ 安全移除'}")
+    
     pl_sd.pop("state_dict", None)
+    print(f"   二次清理后存在state_dict键: {'state_dict' in pl_sd}")
 
-    is_sd2_turbo = 'conditioner.embedders.0.model.ln_final.weight' in pl_sd and pl_sd['conditioner.embedders.0.model.ln_final.weight'].size()[0] == 1024
+    # SD2 Turbo检测
+    print("\n[3/6] 🔍 模型架构检测")
+    test_key = 'conditioner.embedders.0.model.ln_final.weight'
+    key_exists = test_key in pl_sd
+    shape_info = "N/A"
+    if key_exists:
+        shape = pl_sd[test_key].shape
+        shape_info = f"{shape} | 维度0长度: {shape[0]}" if len(shape) >0 else "scalar"
+    is_sd2_turbo = key_exists and (shape_info.startswith("torch.Size([1024") if key_exists else False)
+    
+    print(f"   关键检测键 '{test_key}':")
+    print(f"   - 存在: {key_exists}")
+    print(f"   - 形状: {shape_info}")
+    print(f"   SD2 Turbo判定结果: {is_sd2_turbo}")
 
+    # 键名转换
+    print("\n[4/6] 🔄 键名转换处理")
+    replacement_rules = checkpoint_dict_replacements_sd2_turbo if is_sd2_turbo else checkpoint_dict_replacements_sd1
+    print(f"   使用转换规则集: {'SD2 Turbo' if is_sd2_turbo else 'SD1.x'}")
+    print(f"   规则数量: {len(replacement_rules)}")
+    
     sd = {}
-    for k, v in pl_sd.items():
-        if is_sd2_turbo:
-            new_key = transform_checkpoint_dict_key(k, checkpoint_dict_replacements_sd2_turbo)
+    conversion_stats = {'success': 0, 'skipped': 0, 'duplicate': 0}
+    for i, (k, v) in enumerate(pl_sd.items()):
+        new_key = transform_checkpoint_dict_key(k, replacement_rules)
+        
+        # 转换结果跟踪
+        if new_key is None:
+            conversion_stats['skipped'] +=1
+            if i < 5:  # 显示前5个跳过的键示例
+                print(f"   🚫 跳过键: {k}")
+            continue
+                
+        if new_key in sd:
+            conversion_stats['duplicate'] +=1
+            print(f"   ⚠️ 键名冲突: {k} → {new_key} (已存在)")
         else:
-            new_key = transform_checkpoint_dict_key(k, checkpoint_dict_replacements_sd1)
+            conversion_stats['success'] +=1
+            if i < 5:  # 显示前5个成功转换示例
+                print(f"   ✅ 转换: {k} → {new_key}")
 
-        if new_key is not None:
-            sd[new_key] = v
+        sd[new_key] = v
 
+    # 转换统计
+    print("\n转换统计:")
+    print(f"   成功转换: {conversion_stats['success']}")
+    print(f"   跳过条目: {conversion_stats['skipped']}")
+    print(f"   重复键名: {conversion_stats['duplicate']}")
+
+    # 字典更新
+    print("\n[5/6] ♻️ 更新原始字典")
+    before_size = len(pl_sd)
     pl_sd.clear()
     pl_sd.update(sd)
+    print(f"   字典大小变化: {before_size} → {len(pl_sd)}")
+    print(f"   内存变化: {sys.getsizeof(pl_sd)//1024}KB → {sys.getsizeof(sd)//1024}KB")
+
+    # 最终检查
+    print("\n[6/6] ✅ 最终验证")
+    new_keys = set(pl_sd.keys())
+    added = new_keys - original_keys
+    removed = original_keys - new_keys
+    print(f"   新增键数量: {len(added)}")
+    print(f"   移除键数量: {len(removed)}")
+    if added:
+        print(f"   示例新增键: {list(added)[:3]}")
+    if removed:
+        print(f"   示例移除键: {list(removed)[:3]}")
+
+    # return pl_sd
+
 
     return pl_sd
 
@@ -310,39 +382,120 @@ def read_metadata_from_safetensors(filename):
 
 
 def read_state_dict(checkpoint_file, print_global_state=False, map_location=None):
+
+    print("\n🔍 开始加载检查点文件流程")
+    
+    # 文件扩展名检测
+    print("[1/6] 📂 解析文件信息")
     _, extension = os.path.splitext(checkpoint_file)
+    print(f"   检测到文件扩展名: {extension} | 文件路径: {checkpoint_file}")
+    
     if extension.lower() == ".safetensors":
+        print("\n[2/6] 🔒 安全张量格式处理")
+        # 设备选择逻辑
         device = map_location or shared.weight_load_location or devices.get_optimal_device_name()
-
+        print(f"   最终设备选择: {device} (map_location={map_location}, weight_load_location={shared.weight_load_location})")
+        
         if not shared.opts.disable_mmap_load_safetensors:
+            print("   🚀 使用内存映射加载 (mmap enabled)")
+            start = time.time()
             pl_sd = safetensors.torch.load_file(checkpoint_file, device=device)
+            load_time = time.time() - start
+            print(f"   ✅ 加载完成 | 张量数量: {len(pl_sd)} | 耗时: {load_time:.2f}s")
         else:
-            pl_sd = safetensors.torch.load(open(checkpoint_file, 'rb').read())
-            pl_sd = {k: v.to(device) for k, v in pl_sd.items()}
+            print("   ⚠️ 禁用内存映射 (mmap disabled)")
+            print("   🐢 完整文件加载到内存...")
+            with open(checkpoint_file, 'rb') as f:
+                file_size = os.fstat(f.fileno()).st_size
+                print(f"   文件大小: {file_size//1024//1024}MB")
+                start = time.time()
+                pl_sd = safetensors.torch.load(f.read())
+                
+            print(f"   🔄 迁移张量到设备 {device}")
+            tensor_count = 0
+            converted_pl_sd = {}
+            for k, v in tqdm(pl_sd.items(), desc="转换张量"):
+                converted_pl_sd[k] = v.to(device)
+                tensor_count +=1
+            pl_sd = converted_pl_sd
+            print(f"   已处理 {tensor_count} 个张量")
     else:
+        print("\n[2/6] ⚠️ 传统格式处理")
+        device = map_location or shared.weight_load_location
+        print(f"   使用设备映射: {device}")
+        print(f"   加载方法: torch.load()")
+        # start = time.time()
         pl_sd = torch.load(checkpoint_file, map_location=map_location or shared.weight_load_location)
+        # load_time = time.time() - start
+        # print(f"   ✅ 加载完成 | 耗时: {load_time:.2f}s")
 
+    # 全局状态打印
     if print_global_state and "global_step" in pl_sd:
-        print(f"Global Step: {pl_sd['global_step']}")
+        print("\n[3/6] 🌐 全局训练状态")
+        print(f"   当前全局训练步数: {pl_sd['global_step']}")
+    else:
+        print("\n[3/6] ⚠️ 未找到全局训练步数信息")
 
+    # 状态字典提取
+    print("\n[4/6] 📖 提取状态字典")
     sd = get_state_dict_from_checkpoint(pl_sd)
+    print(f"   获取到 {len(sd)} 个关键参数")
+    
+    # 内存统计
+    # print("\n[5/6] 💾 内存使用情况")
+    # print(f"   CPU内存占用: {psutil.Process().memory_info().rss//1024//1024}MB")
+    # if devices.cuda_available:
+    #     print(f"   GPU内存占用: {torch.cuda.memory_allocated()//1024//1024}MB")
+    
+    print("\n[6/6] 🎉 检查点加载流程完成")
+
     return sd
 
 
 def get_checkpoint_state_dict(checkpoint_info: CheckpointInfo, timer):
+
+    print("\n🔍 开始模型权重加载流程")
+    
+    # 计算模型哈希
+    print("[1/5] 🔢 计算模型哈希值...")
     sd_model_hash = checkpoint_info.calculate_shorthash()
     timer.record("calculate hash")
+    print(f"   ✅ 哈希计算完成 | 哈希值: {sd_model_hash}")
+    # print(f"   ⏱️ 哈希计算耗时: {timer.get_last_time('calculate hash'):.2f}s")
 
+    # 检查缓存是否存在
+    print("\n[2/5] 📦 检查模型缓存")
+    print(f"   当前缓存条目数: {len(checkpoints_loaded)}")
+    
     if checkpoint_info in checkpoints_loaded:
-        # use checkpoint cache
-        print(f"Loading weights [{sd_model_hash}] from cache")
-        # move to end as latest
+        # 缓存命中处理
+        print(f"   🎯 缓存命中 [{sd_model_hash}]")
+        print("   🔄 更新缓存位置为最近使用")
         checkpoints_loaded.move_to_end(checkpoint_info)
+        print(f"   最新缓存顺序: {list(checkpoints_loaded.keys())[-1].shorthash}")
         return checkpoints_loaded[checkpoint_info]
 
-    print(f"Loading weights [{sd_model_hash}] from {checkpoint_info.filename}")
+    # 缓存未命中处理
+    print(f"   ❌ 缓存未命中 [{sd_model_hash}]")
+    print(f"\n[3/5] ⬇️ 从磁盘加载权重文件")
+    print(f"   文件路径: {checkpoint_info.filename}")
+    print(f"   文件大小: {os.path.getsize(checkpoint_info.filename)//1024//1024}MB")
+    
+    # 加载权重文件
     res = read_state_dict(checkpoint_info.filename)
     timer.record("load weights from disk")
+    
+    print("\n[4/5] ✅ 权重加载完成")
+    print(f"   加载张量数量: {len(res)}")
+    # print(f"   ⏱️ 磁盘加载耗时: {timer.get_last_time('load weights from disk'):.2f}s")
+
+    # 更新缓存（假设后续有添加操作）
+    print("\n[5/5] 💾 更新模型缓存")
+    # 此处假设有 checkpoints_loaded[checkpoint_info] = res 操作
+    print(f"   新缓存条目数: {len(checkpoints_loaded)+1}")
+    print(f"   🏷️ 新增缓存标识: {sd_model_hash}")
+
+
 
     return res
 
