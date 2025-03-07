@@ -784,93 +784,251 @@ def get_obj_from_str(string, reload=False):
 
 
 def load_model(checkpoint_info=None, already_loaded_state_dict=None):
+
+    # 模块导入跟踪
+    print("[1/15] ⚙️ 正在导入sd_hijack模块...")
     from modules import sd_hijack
+    print(f"   ✅ 模块导入完成 | 可用方法: {dir(sd_hijack)[:3]}...")
+
+    # 检查点选择逻辑
+    print("\n[2/15] 🔍 检查点选择流程")
+    print(f"   输入checkpoint_info状态: {'已提供' if checkpoint_info else '未提供'}")
     checkpoint_info = checkpoint_info or select_checkpoint()
+    print(f"   🎯 最终使用检查点: {getattr(checkpoint_info, 'filename', '未知')}")
 
+    # 计时器初始化
+    print("\n[3/15] ⏱️ 初始化性能计时器")
     timer = Timer()
+    # print(f"   计时器精度: {timer.precision} | 当前记录数: {len(timer.records)}")
 
+    # 模型卸载流程
+    print("\n[4/15] 🗑️ 清理现有模型")
     if model_data.sd_model:
+        model_size = sum(p.numel() for p in model_data.sd_model.parameters()) 
+        print(f"   检测到现有模型 | 参数量: {model_size//1e6}M | 开始卸载...")
         send_model_to_trash(model_data.sd_model)
+        print("   🚮 模型已移至回收站")
         model_data.sd_model = None
+        print("   内存引用已清除")
         devices.torch_gc()
-
+        freed_mem = devices.get_freed_memory()
+        print(f"   🔄 显存回收完成 | 释放: {freed_mem//1e6}MB")
+    else:
+        print("   ⏭️ 无加载模型，跳过卸载步骤")
+    
     timer.record("unload existing model")
+    # print(f"   ⏱️ 阶段耗时: {timer.get_last_time():.2f}s")
 
+    # 状态字典加载
+    print("\n[5/15] 📦 加载模型权重")
     if already_loaded_state_dict is not None:
+        print("   🔄 使用预加载状态字典")
+        print(f"   字典键数量: {len(already_loaded_state_dict.keys())}")
         state_dict = already_loaded_state_dict
     else:
+        print("   ⬇️ 从检查点加载新状态字典")
+        # print(f"   检查点路径: {checkpoint_info.path}")
         state_dict = get_checkpoint_state_dict(checkpoint_info, timer)
-
+        print(f"   ✅ 加载完成 | 大小: {len(state_dict)//1e6}MB")
+    
+    # 配置检查流程
+    print("\n[6/15] 🔧 配置验证与修复")
+    print("   开始查找匹配的模型配置...")
     checkpoint_config = sd_models_config.find_checkpoint_config(state_dict, checkpoint_info)
-    clip_is_included_into_sd = any(x for x in [sd1_clip_weight, sd2_clip_weight, sdxl_clip_weight, sdxl_refiner_clip_weight] if x in state_dict)
+    print(f"   🛠️ 匹配到的配置文件: {checkpoint_config}")
+    
+    # CLIP权重检测
+    print("\n[7/15] 🔎 CLIP权重检测")
+    clip_candidates = [sd1_clip_weight, sd2_clip_weight, sdxl_clip_weight, sdxl_refiner_clip_weight]
+    found_clips = [x for x in clip_candidates if x in state_dict]
+    print(f"   检测CLIP类型: {found_clips[0] if found_clips else '未找到'}") 
+    clip_is_included_into_sd = bool(found_clips)
+    print(f"   CLIP包含状态: {'✅ 包含' if clip_is_included_into_sd else '❌ 未包含'}")
 
     timer.record("find config")
+    # print(f"   ⏱️ 阶段耗时: {timer.get_last_time():.2f}s")
 
-    sd_config = OmegaConf.load(checkpoint_config)
+    # 配置加载与修复
+    print("\n[8/15] 📄 加载OmegaConf配置")
+    print(f"   配置文件路径: {checkpoint_config}")
+    try:
+        sd_config = OmegaConf.load(checkpoint_config)
+        print(f"   ✅ 配置加载成功 | 结构: {len(sd_config)}个节点")
+    except Exception as e:
+        print(f"   ❌ 配置加载失败: {str(e)}")
+        raise
+    
+    print("   开始修复配置兼容性问题...")
     repair_config(sd_config, state_dict)
+    print("   🔧 配置修复完成")
 
     timer.record("load config")
+    # print(f"   ⏱️ 阶段耗时: {timer.get_last_time():.2f}s")
 
-    print(f"Creating model from config: {checkpoint_config}")
+    # 最终输出
+    print("\n[9/15] 🚀 准备创建模型实例")
+    print(f"   最终使用的配置文件: {checkpoint_config}")
+    print(f"   总耗时统计: {timer.summary()}")
 
+# def okewq23432():
+    print("\n🔥 开始模型初始化流程")
     sd_model = None
+    print("[1/8] 🛠️ 初始化sd_model为None")
+
     try:
-        with sd_disable_initialization.DisableInitialization(disable_clip=clip_is_included_into_sd or shared.cmd_opts.do_not_download_clip):
-            with sd_disable_initialization.InitializeOnMeta():
+        print("\n[2/8] ⚡ 尝试快速初始化模型")
+        print(f"   配置参数 - clip_is_included: {clip_is_included_into_sd}")
+        print(f"   命令行选项 - no_download_clip: {shared.cmd_opts.do_not_download_clip}")
+        
+        # 上下文管理器状态跟踪
+        with sd_disable_initialization.DisableInitialization(
+            disable_clip=clip_is_included_into_sd or shared.cmd_opts.do_not_download_clip
+        ) as ctx1:
+            # print(f"   🔒 初始化限制已启用 | 禁用CLIP: {ctx1.disable_clip}")
+            
+            with sd_disable_initialization.InitializeOnMeta() as ctx2:
+                print("   💽 进入元设备初始化上下文")
+                print(f"   模型配置结构: {len(sd_config.model)}个组件")
+                
+                # 模型实例化
                 sd_model = instantiate_from_config(sd_config.model, state_dict)
+                print(f"   ✅ 快速初始化成功 | 模型类: {type(sd_model).__name__}")
 
     except Exception as e:
+        print(f"\n⚠️ 快速初始化失败！错误类型: {type(e).__name__}")
         errors.display(e, "creating model quickly", full_traceback=True)
+        print("   🚨 进入慢速初始化流程...")
 
     if sd_model is None:
-        print('Failed to create model quickly; will retry using slow method.', file=sys.stderr)
+        print("\n[3/8] 🐢 启动慢速初始化方法")
+        try:
+            with sd_disable_initialization.InitializeOnMeta() as ctx:
+                print("   🔄 重新尝试基础初始化")
+                sd_model = instantiate_from_config(sd_config.model, state_dict)
+                print(f"   ✅ 慢速初始化成功 | 内存占用: {torch.cuda.memory_allocated()//1e6}MB")
+        except Exception as e:
+            print("   ❌ 双重初始化失败！终止流程")
+            raise
+    else:
+        print("   ✔️ 快速初始化流程完成")
 
-        with sd_disable_initialization.InitializeOnMeta():
-            sd_model = instantiate_from_config(sd_config.model, state_dict)
-
+    # 配置关联
+    print("\n[4/8] 📌 绑定配置信息")
     sd_model.used_config = checkpoint_config
-
+    print(f"   关联配置文件: {os.path.basename(checkpoint_config)}")
     timer.record("create model")
+    # print(f"   ⏱️ 模型创建阶段耗时: {timer.get_last_time('create model'):.2f}s")
 
+    # 精度配置
+    print("\n[5/8] 🎚️ 设置权重精度")
     if shared.cmd_opts.no_half:
         weight_dtype_conversion = None
+        print("   🚫 禁用半精度转换 (no_half=True)")
     else:
         weight_dtype_conversion = {
             'first_stage_model': None,
             'alphas_cumprod': None,
             '': torch.float16,
         }
+        print("   🎛️ 混合精度配置:")
+        print(f"    - 首阶段模型: 保持原精度")
+        print(f"    - 累积参数: 保持原精度") 
+        print(f"    - 默认转换: float16")
 
-    with sd_disable_initialization.LoadStateDictOnMeta(state_dict, device=model_target_device(sd_model), weight_dtype_conversion=weight_dtype_conversion):
+    # 权重加载
+    print("\n[6/8] ⬇️ 加载模型权重")
+    target_device = model_target_device(sd_model)
+    print(f"   目标设备: {target_device}")
+    
+    with sd_disable_initialization.LoadStateDictOnMeta(
+        state_dict, 
+        device=target_device,
+        weight_dtype_conversion=weight_dtype_conversion
+    ) as loader:
+        print(f"   🔧 权重加载器配置:")
+        print(f"    - 状态字典条目: {len(state_dict)}")
+        # print(f"    - 转换规则: {loader.weight_dtype_conversion}")
+        
         load_model_weights(sd_model, checkpoint_info, state_dict, timer)
-
+        print(f"   ✅ 权重加载完成 | 峰值内存: {torch.cuda.max_memory_allocated()//1e6}MB")
+    
     timer.record("load weights from state dict")
+    # print(f"   ⏱️ 权重加载耗时: {timer.get_last_time('load weights from state dict'):.2f}s")
 
+    # 设备转移
+    print("\n[7/8] 🚚 迁移模型至设备")
+    prev_mem = torch.cuda.memory_allocated()
     send_model_to_device(sd_model)
+    curr_mem = torch.cuda.memory_allocated()
+    print(f"   💾 显存变化: {curr_mem//1e6}MB (+{(curr_mem-prev_mem)//1e6}MB)")
     timer.record("move model to device")
+    # print(f"   ⏱️ 迁移耗时: {timer.get_last_time('move model to device'):.2f}s")
 
+    # 模型劫持
+    print("\n[8/8] 🎭 执行模型劫持")
     sd_hijack.model_hijack.hijack(sd_model)
+    print("   🔗 劫持操作已完成")
+    # print(f"\n🎉 模型初始化全流程完成！总耗时: {timer.total():.2f}s")
 
+# def ok32324():
+    print("\n🔧 开始模型后处理流程")
+    
+    # 记录劫持完成时间
     timer.record("hijack")
+    # print(f"[1/9] ⏱️ 模型劫持完成计时 | 当前阶段耗时: {timer.get_last_time('hijack'):.2f}s")
 
+    # 设置评估模式
+    print("\n[2/9] 🧪 设置模型为评估模式")
+    prev_training_mode = sd_model.training
     sd_model.eval()
+    print(f"   训练模式变更: {prev_training_mode} → {sd_model.training}")
+
+    # 存储模型引用
+    print("\n[3/9] 💾 保存模型到数据管理器")
+    prev_model_hash = hash(model_data.sd_model) if model_data.sd_model else None
     model_data.set_sd_model(sd_model)
+    curr_model_hash = hash(sd_model)
+    print(f"   模型引用变更: {prev_model_hash or 'None'} → {curr_model_hash}")
+
+    # 更新加载状态
+    print("\n[4/9] ✅ 标记模型加载状态")
+    print(f"   先前加载状态: {model_data.was_loaded_at_least_once}")
     model_data.was_loaded_at_least_once = True
+    print(f"   更新后状态: {model_data.was_loaded_at_least_once}")
 
-    sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings(force_reload=True)  # Reload embeddings after model load as they may or may not fit the model
-
+    # 加载文本嵌入
+    print("\n[5/9] 📥 重新加载文本反转嵌入")
+    # print(f"   强制重载参数: {force_reload}")
+    before_embeddings = len(sd_hijack.model_hijack.embedding_db.word_embeddings)
+    
+    sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings(
+        force_reload=True
+    )
+    
+    after_embeddings = len(sd_hijack.model_hijack.embedding_db.word_embeddings)
     timer.record("load textual inversion embeddings")
+    print(f"   嵌入数量变化: {before_embeddings} → {after_embeddings}")
+    # print(f"   ⏱️ 嵌入加载耗时: {timer.get_last_time('load textual inversion embeddings'):.2f}s")
 
+    # 执行回调函数
+    print("\n[6/9] 📞 触发模型加载回调")
+    # callback_count = len(script_callbacks.model_loaded_callback.callbacks)
+    # print(f"   注册回调数量: {callback_count}")
     script_callbacks.model_loaded_callback(sd_model)
-
     timer.record("scripts callbacks")
+    # print(f"   ⏱️ 回调执行耗时: {timer.get_last_time('scripts callbacks'):.2f}s")
 
-    with devices.autocast(), torch.no_grad():
-        sd_model.cond_stage_model_empty_prompt = get_empty_cond(sd_model)
+    # 计算空提示条件
+    print("\n[7/9] 🌀 计算空提示条件")
+    with devices.autocast() as amp_ctx, torch.no_grad() as no_grad_ctx:
+        print(f"   进入混合精度上下文: {amp_ctx.enabled}")
+        print(f"   梯度计算状态: {not no_grad_ctx.enabled}")
+        
+        empty_cond = get_empty_cond(sd_model)
+        sd_model.cond_stage_model_empty_prompt = empty_cond
 
+        
     timer.record("calculate empty prompt")
-
-    print(f"Model loaded in {timer.summary()}.")
 
     return sd_model
 
